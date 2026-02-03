@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Organic Velocity Trails</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    /* --- ESTILOS VISUALES --- */
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background-color: #000; /* Fondo negro absoluto */
+      overflow: hidden;
+      font-family: 'Courier New', Courier, monospace;
+    }
+
+    /* EL LIENZO (CANVAS) */
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1; /* Capa inferior */
+      display: block;
+      /* Glow effect: resplandor suave para que parezca neón */
+      filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.4)); 
+    }
+
+    /* INTERFAZ DE USUARIO (UI) */
+    .ui {
+      position: absolute;
+      bottom: 30px;
+      left: 30px;
+      z-index: 10; /* Capa superior */
+      pointer-events: none; /* Permite clicks a través del texto... */
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.5rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #FFFFFF;
+      text-shadow: 0 0 10px #00FFFF;
+    }
+
+    p {
+      margin: 5px 0 15px 0;
+      font-size: 0.9rem;
+      color: #aaa;
+    }
+
+    /* BOTÓN LIMPIAR */
+    #clearBtn {
+      pointer-events: auto; /* ...pero activamos clicks para el botón */
+      background: transparent;
+      border: 1px solid #FF0055;
+      color: #FF0055;
+      padding: 10px 20px;
+      font-family: inherit;
+      font-weight: bold;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      letter-spacing: 1px;
+    }
+
+    #clearBtn:hover {
+      background: #FF0055;
+      color: white;
+      box-shadow: 0 0 15px #FF0055;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <canvas id="output_canvas"></canvas>
+    <video id="input_video" style="display:none" playsinline></video>
+    
+    <div class="ui">
+      <h1>Velocity Trails</h1>
+      <p>Lento = Hielo ❄️ | Rápido = Fuego 🔥</p>
+      <button id="clearBtn">🗑️ LIMPIAR LIENZO</button>
+    </div>
+  </div>
+
+  <script>
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const clearBtn = document.getElementById('clearBtn');
+
+    // --- CONFIGURACIÓN PARA EL USUARIO ---
+    
+    // FADE_AMOUNT: Controla la memoria del rastro.
+    // 0.005 = Rastro muy largo (pintura).
+    // 0.1   = Rastro corto (dinámico).
+    const FADE_AMOUNT = 0.02; 
+    
+    const LINE_WIDTH = 1; // Grosor de las líneas
+
+    // Variables internas
+    let forceClear = true;
+    let previousPositions = {}; // Para calcular la velocidad
+
+    // Evento del botón Limpiar
+    clearBtn.addEventListener('click', () => {
+      forceClear = true;
+    });
+
+    // --- MOTOR GRÁFICO ---
+    function onResults(results) {
+      // Ajustar tamaño si la ventana cambia
+      if (canvasElement.width !== window.innerWidth || canvasElement.height !== window.innerHeight) {
+        canvasElement.width = window.innerWidth;
+        canvasElement.height = window.innerHeight;
+        forceClear = true;
+      }
+
+      // 1. GESTIÓN DEL FONDO (FADING)
+      if (forceClear) {
+        // Borrado total (Negro Sólido)
+        canvasCtx.fillStyle = 'rgba(0, 0, 0, 1.0)';
+        canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+        forceClear = false;
+        previousPositions = {}; // Reiniciar historial de velocidad
+      } else {
+        // Borrado parcial (Efecto estela)
+        canvasCtx.fillStyle = `rgba(0, 0, 0, ${FADE_AMOUNT})`;
+        canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+      }
+
+      // 2. ESPEJO Y TRANSFORMACIÓN
+      canvasCtx.save();
+      canvasCtx.translate(canvasElement.width, 0);
+      canvasCtx.scale(-1, 1);
+      
+      const numHands = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+
+      if (numHands > 0) {
+        for (let i = 0; i < numHands; i++) {
+          const landmarks = results.multiHandLandmarks[i];
+          
+          // Usamos la muñeca (índice 0) para medir la velocidad general de la mano
+          const wrist = landmarks[0];
+          const x = wrist.x * canvasElement.width;
+          const y = wrist.y * canvasElement.height;
+          
+          let hue = 240; // Color por defecto (Azul)
+
+          // 3. CÁLCULO DE VELOCIDAD
+          if (previousPositions[i]) {
+            const prev = previousPositions[i];
+            // Distancia recorrida desde el último cuadro
+            const dist = Math.hypot(x - prev.x, y - prev.y);
+            
+            // MAPEO: Velocidad -> Color
+            // Multiplicamos dist * 4 para aumentar la sensibilidad.
+            // 240 (Azul) -> 0 (Rojo)
+            let targetHue = 240 - (dist * 4); 
+            
+            // Limitadores para no salirnos del rango azul-rojo
+            if (targetHue < 0) targetHue = 0;     // Máximo Rojo
+            if (targetHue > 240) targetHue = 240; // Máximo Azul
+            
+            hue = targetHue;
+          }
+
+          // Guardar posición actual para el siguiente cálculo
+          previousPositions[i] = { x, y };
+
+          // Color final: HSLA (Color calculado, 100% Sat, 60% Luz, 0.6 Opacidad)
+          const color = `hsla(${hue}, 100%, 60%, 0.6)`;
+
+          // 4. DIBUJAR ESQUELETO
+          drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {
+            color: color, 
+            lineWidth: LINE_WIDTH
+          });
+          
+          // Dibujar puntos pequeños (articulaciones)
+          drawLandmarks(canvasCtx, landmarks, {
+            color: '#FFFFFF', 
+            lineWidth: 0,
+            radius: 1
+          });
+        }
+      } else {
+        // Si no hay manos, reseteamos para evitar saltos de color erróneos al volver
+        previousPositions = {};
+      }
+      
+      canvasCtx.restore();
+    }
+
+    // --- INICIALIZAR IA (MEDIAPIPE) ---
+    const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResults);
+
+    // --- INICIALIZAR CÁMARA ---
+    const camera = new Camera(videoElement, {
+      onFrame: async () => { await hands.send({image: videoElement}); },
+      width: 1280, height: 720
+    });
+    camera.start();
+
+  </script>
+</body>
+</html>
